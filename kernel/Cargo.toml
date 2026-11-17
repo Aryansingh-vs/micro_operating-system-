@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 bootloader_api = "0.11.17"
+pc-keyboard = "0.9.0"
+x86_64 = "0.15.5"

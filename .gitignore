@@ -3,3 +3,4 @@
 *.img
 *.iso
 /dist/
+.DS_Store

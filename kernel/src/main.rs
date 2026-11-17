@@ -3,12 +3,33 @@
 #![no_std]
 #![no_main]
 
+mod console;
+
 use bootloader_api::info::{FrameBuffer, FrameBufferInfo, PixelFormat};
 use bootloader_api::{entry_point, BootInfo};
+
 use pc_keyboard::{
     layouts, DecodedKey, HandleControl, KeyState, PS2Keyboard, ScancodeSet1,
 };
+
 use x86_64::instructions::port::Port;
+use console::Console;
+
+entry_point!(kernel_main);
+
+// AryOS theme
+const BG: (u8, u8, u8) = (9, 14, 30);
+const PANEL: (u8, u8, u8) = (17, 26, 48);
+const BORDER: (u8, u8, u8) = (40, 65, 100);
+const FG: (u8, u8, u8) = (225, 235, 250);
+const CYAN: (u8, u8, u8) = (65, 220, 255);
+
+const START_X: usize = 55;
+const START_Y: usize = 220;
+
+const CELL_WIDTH: usize = 12;
+const CELL_HEIGHT: usize = 16;
+const FONT_SCALE: usize = 2;
 
 entry_point!(kernel_main);
 
@@ -23,11 +44,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let mut data_port = Port::<u8>::new(0x60);
 
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
-        draw_welcome(framebuffer);
-
         let info = framebuffer.info().clone();
-        let mut cursor_x: usize = 30;
-        let cursor_y = info.height / 2 + 100;
+        let mut console = Console::new();
+
+        draw_background(framebuffer, &info);
 
         loop {
             let status = unsafe { status_port.read() };
@@ -40,28 +60,50 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         if let Some(DecodedKey::Unicode(character)) =
                             keyboard.process_keyevent(event)
                         {
+                            let old_row = console.row;
+                            let old_column = console.column;
+
                             if character == '\n' {
-                                cursor_x = 30;
+                                console.write_byte(b'\n');
+
+                                // Redraw console rows to handle scrolling.
+                                for row in 0..console::HEIGHT {
+                                    draw_console_row(
+                                        framebuffer,
+                                        &info,
+                                        &console,
+                                        row,
+                                    );
+                                }
                             } else if character == '\u{8}' {
-                                cursor_x = cursor_x.saturating_sub(24);
+                                console.write_byte(8);
+
+                                if old_row != console.row
+                                    || old_column != console.column
+                                {
+                                    draw_console_cell(
+                                        framebuffer,
+                                        &info,
+                                        &console,
+                                        console.row,
+                                        console.column,
+                                    );
+                                }
                             } else if character.is_ascii_graphic()
                                 || character == ' '
                             {
-                                draw_char(
-                                    framebuffer.buffer_mut(),
+                                console.write_byte(character as u8);
+
+                                let new_row = console.row;
+                                let new_column = console.column - 1;
+
+                                draw_console_cell(
+                                    framebuffer,
                                     &info,
-                                    character as u8,
-                                    cursor_x,
-                                    cursor_y,
-                                    3,
-                                    (255, 255, 255),
+                                    &console,
+                                    new_row,
+                                    new_column,
                                 );
-
-                                cursor_x += 24;
-
-                                if cursor_x + 24 >= info.width {
-                                    cursor_x = 30;
-                                }
                             }
                         }
                     }
@@ -77,41 +119,148 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 }
 
-fn draw_welcome(framebuffer: &mut FrameBuffer) {
-    let info = framebuffer.info().clone();
+// Draw the main AryOS interface.
+fn draw_background(
+    framebuffer: &mut FrameBuffer,
+    info: &FrameBufferInfo,
+) {
     let buffer = framebuffer.buffer_mut();
 
-    fill(buffer, &info, (12, 18, 38));
+    fill(buffer, info, BG);
 
-    let scale = 8;
-    let width = text_width("ARYOS", scale);
-
+    // Main branding
     draw_text(
         buffer,
-        &info,
+        info,
         "ARYOS",
-        info.width.saturating_sub(width) / 2,
-        info.height / 2 - 70,
-        scale,
-        (80, 220, 255),
+        55,
+        35,
+        5,
+        CYAN,
     );
 
-    let scale = 4;
-    let width = text_width("WELCOME", scale);
-
     draw_text(
         buffer,
-        &info,
-        "WELCOME",
-        info.width.saturating_sub(width) / 2,
-        info.height / 2 + 30,
-        scale,
-        (235, 240, 255),
+        info,
+        "SYSTEM CONSOLE",
+        60,
+        105,
+        2,
+        FG,
+    );
+
+    // Main terminal panel
+    fill_rect(
+        buffer,
+        info,
+        35,
+        155,
+        1062,
+        500,
+        PANEL,
+    );
+
+    // Panel borders
+    fill_rect(buffer, info, 35, 155, 1062, 2, BORDER);
+    fill_rect(buffer, info, 35, 653, 1062, 2, BORDER);
+    fill_rect(buffer, info, 35, 155, 2, 500, BORDER);
+    fill_rect(buffer, info, 1095, 155, 2, 500, BORDER);
+
+    // Terminal title
+    draw_text(
+        buffer,
+        info,
+        "TERMINAL",
+        55,
+        175,
+        2,
+        CYAN,
+    );
+
+    // Separator
+    fill_rect(
+        buffer,
+        info,
+        55,
+        202,
+        1020,
+        1,
+        BORDER,
+    );
+
+    // Footer
+    draw_text(
+        buffer,
+        info,
+        "ARYOS READY",
+        55,
+        690,
+        2,
+        CYAN,
     );
 }
 
-fn text_width(text: &str, scale: usize) -> usize {
-    text.len().saturating_mul(6 * scale).saturating_sub(scale)
+// Draw one character cell.
+fn draw_console_cell(
+    framebuffer: &mut FrameBuffer,
+    info: &FrameBufferInfo,
+    console: &Console,
+    row: usize,
+    column: usize,
+) {
+    if row >= console::HEIGHT || column >= console::WIDTH {
+        return;
+    }
+
+    let x = START_X + column * CELL_WIDTH;
+    let y = START_Y + row * CELL_HEIGHT;
+
+    let buffer = framebuffer.buffer_mut();
+
+    // Clear only the changed character area.
+    fill_rect(
+        buffer,
+        info,
+        x,
+        y,
+        CELL_WIDTH,
+        CELL_HEIGHT,
+        PANEL,
+    );
+
+    let character = console.get_buffer()[row][column];
+
+    draw_char(
+        buffer,
+        info,
+        character,
+        x,
+        y,
+        FONT_SCALE,
+        FG,
+    );
+}
+
+// Redraw one console row.
+fn draw_console_row(
+    framebuffer: &mut FrameBuffer,
+    info: &FrameBufferInfo,
+    console: &Console,
+    row: usize,
+) {
+    if row >= console::HEIGHT {
+        return;
+    }
+
+    for column in 0..console::WIDTH {
+        draw_console_cell(
+            framebuffer,
+            info,
+            console,
+            row,
+            column,
+        );
+    }
 }
 
 fn draw_text(
@@ -164,10 +313,36 @@ fn draw_char(
     }
 }
 
-fn fill(buffer: &mut [u8], info: &FrameBufferInfo, color: (u8, u8, u8)) {
+fn fill(
+    buffer: &mut [u8],
+    info: &FrameBufferInfo,
+    color: (u8, u8, u8),
+) {
     for y in 0..info.height {
         for x in 0..info.width {
             set_pixel(buffer, info, x, y, color);
+        }
+    }
+}
+
+fn fill_rect(
+    buffer: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    color: (u8, u8, u8),
+) {
+    for dy in 0..height {
+        for dx in 0..width {
+            set_pixel(
+                buffer,
+                info,
+                x + dx,
+                y + dy,
+                color,
+            );
         }
     }
 }
@@ -183,7 +358,8 @@ fn set_pixel(
         return;
     }
 
-    let offset = (y * info.stride + x) * info.bytes_per_pixel;
+    let offset =
+        (y * info.stride + x) * info.bytes_per_pixel;
 
     if offset + info.bytes_per_pixel > buffer.len() {
         return;
@@ -191,13 +367,19 @@ fn set_pixel(
 
     let channels = match info.pixel_format {
         PixelFormat::Rgb => [red, green, blue],
+
         PixelFormat::Bgr => [blue, green, red],
+
         PixelFormat::U8 => {
             let gray =
-                ((u16::from(red) * 30 + u16::from(green) * 59
-                    + u16::from(blue) * 11) / 100) as u8;
+                ((u16::from(red) * 30
+                    + u16::from(green) * 59
+                    + u16::from(blue) * 11)
+                    / 100) as u8;
+
             [gray, gray, gray]
         }
+
         PixelFormat::Unknown {
             red_position,
             green_position,
@@ -219,6 +401,7 @@ fn set_pixel(
 
             channels
         }
+
         _ => [red, green, blue],
     };
 
@@ -257,6 +440,7 @@ fn glyph(character: u8) -> [u8; 7] {
         b'X' => [17, 17, 10, 4, 10, 17, 17],
         b'Y' => [17, 17, 10, 4, 4, 4, 4],
         b'Z' => [31, 1, 2, 4, 8, 16, 31],
+
         b'0' => [14, 17, 19, 21, 25, 17, 14],
         b'1' => [4, 12, 4, 4, 4, 4, 14],
         b'2' => [14, 17, 1, 2, 4, 8, 31],
@@ -267,6 +451,7 @@ fn glyph(character: u8) -> [u8; 7] {
         b'7' => [31, 1, 2, 4, 8, 8, 8],
         b'8' => [14, 17, 17, 14, 17, 17, 14],
         b'9' => [14, 17, 17, 15, 1, 1, 14],
+
         _ => [0; 7],
     }
 }

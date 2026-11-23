@@ -3,30 +3,32 @@ use std::process::Command;
 
 fn main() {
     let mode = env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("Usage: cargo run -p aryos -- [image|bios]");
-        std::process::exit(2);
+        "virtualbox".to_string()
     });
 
     match mode.as_str() {
         "image" => {
             let output_dir = std::path::Path::new("dist");
             std::fs::create_dir_all(output_dir).expect("create dist directory");
-            let output = output_dir.join("aryos-uefi.img");
-            std::fs::copy(env!("ARYOS_UEFI_IMAGE"), &output)
+            let uefi_output = output_dir.join("aryos-uefi.img");
+            let bios_output = output_dir.join("aryos-bios.img");
+            std::fs::copy(env!("ARYOS_UEFI_IMAGE"), &uefi_output)
                 .expect("copy UEFI disk image to dist/");
-            println!("UEFI disk image ready: {}", output.display());
+            std::fs::copy(env!("ARYOS_BIOS_IMAGE"), &bios_output)
+                .expect("copy BIOS disk image to dist/");
+            println!("UEFI disk image ready: {}", uefi_output.display());
+            println!("BIOS disk image ready: {}", bios_output.display());
         }
-        "bios" => {
-            let mut qemu = Command::new("qemu-system-x86_64");
-            qemu.arg("-m").arg("256M").arg("-no-reboot").arg("-drive");
-            qemu.arg(format!("format=raw,file={}", env!("ARYOS_BIOS_IMAGE")));
-            let status = qemu.status().expect("start qemu-system-x86_64");
+        "virtualbox" => {
+            let mut virtualbox = Command::new("VBoxManage");
+            virtualbox.arg("startvm").arg("AryOS-ARM64").arg("--type").arg("gui");
+            let status = virtualbox.status().expect("start VirtualBox");
             if !status.success() {
                 std::process::exit(status.code().unwrap_or(1));
             }
         }
         _ => {
-            eprintln!("Unknown mode: {mode}. Use image or bios.");
+            eprintln!("Unknown mode: {mode}. Use image or virtualbox.");
             std::process::exit(2);
         }
     }

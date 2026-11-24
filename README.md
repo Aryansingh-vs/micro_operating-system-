@@ -189,10 +189,3 @@ scancodes. The shell interprets commands and uses an allocator-backed directory
 tree. Every file and directory exists only in RAM, so changes do not require a
 disk driver and disappear after reboot.
 
-## Viva summary
-
-AryOS demonstrates protected-mode setup, paging, allocators, interrupt handling,
-device input, memory organization, filesystem design, and a command interpreter
-without an existing operating-system runtime. It is intentionally stable and
-small: networking and disk filesystems are omitted rather than risking boot
-reliability.
